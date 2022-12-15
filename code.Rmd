@@ -1,0 +1,622 @@
+---
+title: 'Final Project: Access to Technology in Illinois School Districts'
+author: "---"
+date: "2022-12-04"
+output:
+  html_document:
+    toc: yes
+    toc_depth: 2
+    toc_float: yes
+    theme: journal
+    highlight: pygments
+    code_folding: hide
+editor_options:
+  chunk_output_type: console
+always_allow_html: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+# install.packages("vtable")
+# install.packages("pastecs")
+library("tidyverse")
+library("rmarkdown")
+library("kableExtra")
+library("readxl")
+library("gridExtra")
+library("corrplot")
+library("vtable")
+library("pastecs")
+library("paletteer")
+library(RColorBrewer)
+
+tech_data = read_excel("technology_data.xlsx")
+```
+
+
+# Access to Technology in Illinois School Districts
+
+## Research question
+> Which school districts in Illinois experience the most technology accessibility issues (and potentially need more funding)?
+
+## Policy context
+
+Several public agencies across the nation started paying more attention to the digital divide present in their communities, especially among students. This was further amplified by the COVID-19 pandemic when student access to technology became crucial for their education progression. According to data as of the year 2020, around 100,000 students in Chicago lacked access to high-speed Internet (“Chicago Launches Groundbreaking Initiative to Bridge Digital Divide,” 2020). That is why in 2020 the City of Chicago pioneered "one of kind" initiative called ["Chicago Connected"](https://www.cps.edu/strategic-initiatives/chicago-connected/) that is aimed at providing local students from low-income communities with high-speed Internet. The public program has already had some success resulting in increased remote learning attendance rates. However, despite its impressive results, this is still a city-level program and there are many other school districts in Illinois that need the support. By implementing this project we are hoping to identify Illinois districts that demonstrate the most urgent need for technology connectivity funding.  We hope that the produced visualizations will convey a message about which exact districts policymakers should concentrate on and why.  
+
+## About the data
+
+The data  comes from the report made by the [Illinois State Board of Education](https://www.isbe.net/Pages/Data-Analysis-Reports.aspx) and can be found on the agency's website. The unit of analysis here is a school district. The data consists of 656 observations - all for the 2020/2021 school year. The data provides characteristics of students in each district (by income, gender, race) as well as 4 additional variables regarding student technology access.
+
+
+Dimensions:
+```{r}
+dim(tech_data)
+```
+
+Dataset:
+
+```{r, echo=FALSE, layout="l-body-outset"}
+paged_table(head(tech_data))
+```
+
+**Key variables:**
+
+*The data provides socio-economic characteristics of students in each district by:*
+
+- Income: Number of low income students, number of homeless students, 
+
+- Race: Number of students from each race group: such as, White, Hispanic, African-American, Asian, Native American/Alaskan, Pacific Islander, two or more
+
+- Gender: Male, Female
+
+*As well as 4 additional variables regarding student technology access:*
+
+-  Answer to the question: Is your district one-to-one at all grade levels? (For this survey, "one-to-one" refers to districts providing each student with an instructional device like a laptop, tablet, and Chromebook.) - Yes/No
+
+- Number of devices available to students
+
+- How many students are NOT able to connect to the internet from their home?
+
+- How many cellular wifi hotspots does the district have available for student to use for digital remote learning? 
+
+## Step 0. Creating a theme
+
+```{r}
+plot_theme =
+  theme_light() +
+  theme(
+    plot.title = element_text(face = "bold",
+                              size = 16,
+                              family = "serif",
+                              hjust = 0), 
+    plot.subtitle = element_text(face = "italic",
+                                 size = 12,
+                                 family = "serif"),
+    axis.title = element_text(face = "bold",
+                              size = 14,
+                              family = "serif"),
+    legend.title = element_text(size = 12,
+                                face = "bold",
+                                family = "serif"),
+    legend.text = element_text(size = 10,
+                               family = "serif")
+  )
+```
+
+## Step 1. Data cleaning & Exploration
+
+### Renaming columns
+
+Tech-related variables have long names and needed to be renamed.
+
+```{r}
+tech_data = 
+  tech_data %>% 
+    rename(
+      `one-to-one` =
+        "1. Is your district one-to-one at all grade levels? For this survey, \"one-to-one\" refers to districts providing each student with an instructional device like a laptop, tablet, and Chromebook.", 
+      `# devices` = "Number of Devices for Students",
+      `# can't connect` =
+        "How many students are NOT able to connect to the internet from their home?", 
+      `# hotspots` =
+        "How many cellular wifi hotspots and cellular-connected devices does the district have available for student use for digital remote learning?",
+      `Total # students` = `PreK-12`) %>% 
+  mutate(`one-to-one` = tolower(`one-to-one`))
+colnames(tech_data)
+```
+
+### Getting rid of < in data
+
+Instead of reporting exact numbers, data inputs have a character value "<10" in cases where the value is less than 10. In order to operate with numeric variables, we need to get rid of the "<" sign. However, we acknowledge that this would add some bias into the final results.
+
+```{r}
+tech_data[c("Homeless", "English Learner", "Hispanic", 
+            "Native American/Alaskan", "Asian", "African American", 
+            "Pacific Islander","White", "Two or More", "# devices", 
+            "# can't connect", "# hotspots")] <- lapply(
+              tech_data[c("Homeless", "English Learner", "Hispanic", 
+                          "Native American/Alaskan", "Asian", 
+                          "African American", "Pacific Islander","White", 
+                          "Two or More", "# devices", "# can't connect", 
+                          "# hotspots")], 
+              function(x) as.numeric(gsub("<", "", x)))
+
+```
+
+
+### Identifying missing values
+
+Dataset includes a total of 14 districts where data on number of devices and number of hotspots is
+unavailable. The source does not explain the reason behind this.
+
+```{r}
+tech_data_na = 
+  tech_data %>% 
+  filter(if_any(everything(), is.na))
+
+tech_data_na %>% 
+  select(District, `County Name`, `Total # students`, `# can't connect`, `# hotspots`)
+```
+
+NA values represent 2% of all the observations, which is a small percentage.
+```{r}
+nrow(tech_data_na) / nrow(tech_data) * 100
+```
+
+We can also check how NA values compare to socio-economic variables.
+```{r}
+above_median_low_income <- function(x, na.rm = TRUE) {
+    return(x > median(tech_data$`Low Income`, na.rm = na.rm))
+}
+above_median_homeless <- function(x, na.rm = TRUE) {
+    return(x > median(tech_data$Homeless, na.rm = na.rm))
+}
+
+above_median_white <- function(x, na.rm = TRUE) {
+    return(x > median(tech_data$White, na.rm = na.rm))
+}
+```
+We can see that almost all NAs have above median number of low income students, around half of them have above median number of homeless students, yet more than half have more than median number of white students. The results will be redone with consideration of different school sizes as this might have an influence. But so far, it stands to reason to assume that schools that did not report their information belong to poorer schools, the ones that might potentially need most help.
+```{r}
+tech_data_na %>% 
+  mutate(
+    above_median_low_income = above_median_low_income(`Low Income`),
+    above_median_homeless = above_median_homeless(Homeless),
+    above_median_white = above_median_white(White)
+  ) %>% 
+  select(District, above_median_low_income, above_median_homeless, above_median_white)
+```
+
+
+### Descriptive statistics (original variables)
+  
+```{r}
+data_stat = 
+  tech_data %>% 
+  keep(is.numeric) %>% 
+  select(-`School Year`, -`Category`, -`K-12`)
+data_stat = stat.desc(data_stat)
+
+data_stat = data_stat[-c(1, 2, 3, 10, 11, 12), ]
+
+data_stat %>% 
+  kable(col.names = colnames(data_stat), 
+        align = "clc", 
+        caption = "Descriptive statistics (original variables)", 
+        digits = c(0, 2, 2), 
+        format.args = list(big.mark = ",")) %>% 
+  kable_styling(font_size = 8,
+                full_width = F, 
+                html_font = "Cambria") %>% 
+  row_spec(c (3, 7), color = "red") %>% 
+  column_spec(c(1:14), color = "black")
+```
+- Summary statistics of the original variables demonstrate that
+data consists of very differently sized schools. Standard deviation for the total number of students studying in each district is around 19,000. Thus, we need to find a way to account for different school sizes to negate its effect on the final results.
+
+- What is more, technology accessibility is characterized by great variability. The range between all numeric technology variables is exactly between 0 and a maximum. The standard deviations are significantly above the mean. 
+
+### Density (original variables)
+
+```{r}
+tech_data %>%
+  keep(is.numeric) %>%                     # keep only numeric columns
+  select(-`School Year`, -`Category`, -`K-12`) %>% 
+  gather() %>%                             # convert to key-value pairs
+  ggplot(aes(value)) +                     # plot the values
+    facet_wrap(~ key, scales = "free") +   # in separate panels
+    geom_density()  
+```
+
+The distribution of all the presented varibles is very right-skewed. The graphs further prove the big gap between variable values and the number of outliers existant in the data.
+
+### Creating new variables 
+
+In order to account for different district sizes demographic and technology-related variables can be turned into proportions (or percentages of the total). 
+This is achieved by dividing the demographic and technology-related variables by the total number of students in each district.
+
+```{r}
+tech_data_perc = 
+  tech_data %>% 
+  mutate(`% Low Income` = `Low Income` / `Total # students` * 100,
+         `% Homeless` = `Homeless` / `Total # students` * 100,
+         `% English Learner` = `English Learner` / `Total # students` * 100, 
+         `% Female` = `Female` / `Total # students` * 100, 
+         `% Male` = `Male` / `Total # students` * 100,
+         `% Hispanic` = `Hispanic` / `Total # students` * 100,
+         `% Native American/Alaskan` = `Native American/Alaskan` / `Total # students` * 100,
+         `% Asian` = `Asian` / `Total # students` * 100,
+         `% African American` = `African American` / `Total # students` * 100, 
+         `% Pacific Islander` = `Pacific Islander` / `Total # students` * 100,
+         `% White` = `White` / `Total # students` * 100, 
+         `% Two or More` = `Two or More` / `Total # students` * 100, 
+         `# devices per student` = `# devices` / `Total # students`,
+         `% can't connect` = `# can't connect` / `Total # students` * 100, 
+         `# hotspots per student` = `# hotspots` / `Total # students`)
+  
+```
+
+
+### Descriptive statistics (for proportional variables)
+
+```{r}
+data_stat =
+  tech_data_perc %>% 
+  keep(is.numeric) %>% 
+  select(`Total # students`,
+         `% Low Income`,
+         `% Homeless`,
+         `% English Learner`, 
+         `% Female`, 
+         `% Male`,
+         `% Hispanic`,
+         `% Native American/Alaskan`,
+         `% Asian`,
+         `% African American`, 
+         `% Pacific Islander`,
+         `% White`, 
+         `% Two or More`, 
+         `# devices per student`,
+         `% can't connect`, 
+         `# hotspots per student`,
+         `# devices`, 
+         `# can't connect`, 
+         `# hotspots`
+  )
+data_stat = stat.desc(data_stat)
+
+data_stat = data_stat[-c(1, 2, 3, 10, 11, 12), ]
+
+data_stat %>% 
+  kable(col.names = colnames(data_stat), 
+        align = "clc", 
+        caption = "Descriptive statistics (proportional variables)", 
+        digits = c(0, 2, 2), 
+        format.args = list(big.mark = ",")) %>% 
+  kable_styling(font_size = 8,
+                full_width = F, 
+                html_font = "Cambria") %>% 
+  row_spec(c (3, 7), color = "red") %>% 
+  column_spec(c(1:14), color = "black")
+```
+Now we can interpret the descriptive statistics for proportional variables:
+
+  1. We can see that the mean and median number of devices per student is around 1
+  
+  2. The median of the percentage of students who cannot connect from home is around 9% - *which is a low number signifying that schools where this number is over 30-50% are indeed not that common, need and can be assisted*
+  
+  3. The mean and median of # hotspots is 0 - *this can signify general lack of this Internet access technology at schools*
+  
+  4. The gap between schools is represented by the standard deviation levels. The percentage of students who cannot connect from home varies by about 13% across school districts, while the number of devices - by around 0.5 per student. The SD for the hotspots is 0.
+
+### Density (proportional variables)
+    
+```{r}
+tech_data_perc %>%
+  select(`Total # students`,
+           `% Low Income`,
+           `% Homeless`,
+           `% English Learner`, 
+           `% Female`, 
+           `% Male`,
+           `% Hispanic`,
+           `% Native American/Alaskan`,
+           `% Asian`,
+           `% African American`, 
+           `% Pacific Islander`,
+           `% White`, 
+           `% Two or More`, 
+           `# devices per student`,
+           `% can't connect`, 
+           `# hotspots per student`) %>%                    
+    gather() %>%                             
+    ggplot(aes(value)) +                     
+    facet_wrap(~ key, scales = "free") +   
+    geom_density()  
+```
+
+*Demographic variables:*
+
+    1. We can see that gender variables have close to normal distribution.
+    
+    2. Also close to normal are the distributions of income variables - percentage of low income students.
+    
+    3. When it comes to race variables: density plot is left-skewed only in the case of white students (more often we can see high percentages of white students), but is right skewed in the case of all the minority groups (more often their percentage is low).
+    
+*Technology variables:*
+
+    1. Number of devices per students: most often schools provide around exactly 1 device per student - again emphasizing that schools that do not perform well are not so common and can be helped specifically.
+    
+    2. Percentage of students who can't connect: variable is right skewed, meaning their percentage is usually low (below 25 percent)
+    
+    3. Number of hotspots per student: the only mutated variable that looks almost the same as before taking the size of schools into account. We can still see a pretty big gap between schools: while the vast majority of schools have zero / around zero hotspots per student (which makes sense), there are a few - that have more than 1 per student.
+### Reassessing NAs
+
+Now that we have proportionate variables we can compare NA schools to others more accurately and this, indeed, shows completely different results. We can see that schools that did not report their technology-related indicators all have above medium number of low income and homeless students. This means these schools are one of the poorest ones and potentially need most help. Their exclusion from the analysis might add bias to the result and it is highly recommended that additional information about these districts is inquired by the authorities.
+```{r}
+above_median_low_income <- function(x, na.rm = TRUE) {
+    return(x > median(tech_data_perc$`% Low Income`, na.rm = na.rm))
+}
+above_median_homeless <- function(x, na.rm = TRUE) {
+    return(x > median(tech_data_perc$`% Homeless`, na.rm = na.rm))
+}
+
+above_median_white <- function(x, na.rm = TRUE) {
+    return(x > median(tech_data_perc$`% White`, na.rm = na.rm))
+}
+
+tech_data_na %>% 
+  mutate(
+    above_median_low_income = above_median_low_income(`Low Income`),
+    above_median_homeless = above_median_homeless(Homeless),
+    above_median_white = above_median_white(White)
+  ) %>% 
+  select(District, above_median_low_income, above_median_homeless, above_median_white)
+```
+
+### Exploring correlations
+
+Before exploring the correlations we need to define what "the ideal" result would look like when the technology accessibility is properly addressed. Ideally, we would want to see a moderate to (optimally) high positive correlation between:
+  
+  >a. the percentage of students who cannot connect from home and number of hotspots in a school - meaning that the **problem of Internet accessibility** is addressed: students who cannot connect from home, can use school hotspots to do homework
+  >b. % low-income or minority groups and number of devices available to them - meaning the **problem of device accessibility** is addressed: those students who cannot afford to get devices for schoolwork, can be provided with the equipment by schools
+
+
+```{r}
+tech_data_cor = 
+  tech_data_perc %>% 
+    select(`Total # students`,
+           `% Low Income`,
+           `% Homeless`,
+           `% English Learner`, 
+           `% Female`, 
+           `% Male`,
+           `% Hispanic`,
+           `% Native American/Alaskan`,
+           `% Asian`,
+           `% African American`, 
+           `% Pacific Islander`,
+           `% White`, 
+           `% Two or More`, 
+           `# devices per student`,
+           `% can't connect`, 
+           `# hotspots per student`,
+           `# devices`, 
+           `# can't connect`, 
+           `# hotspots`
+    )
+
+corrplot(cor(tech_data_cor, use = "pairwise.complete.obs"),
+         type = 'upper', method = 'number', number.cex=0.4,
+         tl.col = 'black')
+```
+
+
+1. When it comes to the first point we can definitely observe some response in terms of Internet accessibility from school districts. A positive correlation of 0.22 can be seen between percentage of students who cannot connect and number of hotspots per student, which is a positive sign.
+
+This observation is further proven when looking at the mostly negative correlations between the percentage of white students in a district and technology variables. Meaning the higher the proportion of white students - the lower percentage of students who can't connect, **but also** the lower the number of hotspots in school. Meaning minority groups that face more connectivity barriers do receive higher support when it comes to hotspots.
+
+>However, the current correlation between the % students who cannot connect and the number of hotspots is still quite low. In order to ensure prompted response and help students with the most need, it stands to reason to install more hotspots in areas where there is the highest percentage of students who cannot connect. The correlation that is currently at around 0.2 needs to be higher to signify that help is indeed allocated exactly where it is needed.
+
+2. When it comes to device accessibility, we can see even more room for improvement. The desired correlations between income, race variables and the device per student variable are not found, signifying device accessibility is still a huge issue in Illinois schools and needs to be addressed. 
+
+**Other important correlations that can be seen from the matrix:**
+
+  1. Self-explanatory moderate positive correlation (0.41 and 0.37) between students who cannot connect from home and the percentage of homeless and low-income students. **Meaning installing more hotspots would benefit low-income groups of students the most.**
+  
+  2. Moderate positive correlation between percentage of students who cannot connect from home and percentage of **African-American (0.2), Native American/Alaskan and Pacific Islander students (0.3). Meaning these race groups would benefit the most from installing more hotspots**
+
+## Step 2. Identifying schools with the most need
+
+>Previous analysis allowed us to define two main directions of focus - Internet connectivity barriers and device accessibility
+
+### №1. Districts facing the most Internet connectivity barriers
+
+We will define schools that face most Internet connectivity barriers by finding districts that have the highest percentage of students who cannot connect from home but the lowest number of hotspots (in this case - just 0). This will be achieved with the help of a Cleveland dot chart.
+
+### Begin preparing the data
+First, arrange by percentage of students who can't connect (descending) and number of hotspots per student (ascending).
+
+There is a difference depending on which variable is the first priority in arrangement. We will give first priority to hotspots, because otherwise - we receive schools that address the technology gap quite efficiently and have more than 0.5 hotspots per student (which is more than enough)
+
+In order to limit the scope of focus we only plot the first 20 schools.
+
+**Comparison - if we prioritize percentage who cannot connect:**
+```{r}
+
+tech_data_perc %>% 
+    arrange(desc(`% can't connect`), `# hotspots per student`) %>% 
+    slice(1:20) %>%  
+  select(District, `County Name`, `Total # students`, `% can't connect`, `# hotspots per student`)
+```
+
+**Comparison - if we prioritize number of hotspots per student - a lot of zeros:**
+```{r}
+data_cleveland = 
+  tech_data_perc %>% 
+    arrange(`# hotspots per student`, desc(`% can't connect`)) %>%
+    slice(1:20) 
+
+data_cleveland %>% 
+    select(District, `County Name`, `Total # students`, `% can't connect`, `# hotspots per student`)
+```
+
+> **Note:** the dataset has some wrong numbers, because there are two districts where the number of students who cannot connect is a little higher than the total number of students.
+
+
+### Change data format
+
+For comparison on a Cleveland chart, we need to create a separate row for each technology variable.
+
+```{r}
+data_cleveland = pivot_longer(data_cleveland, 
+                              cols = c(`# hotspots per student`,
+                                       `% can't connect`),
+                              names_to = "tech_var", 
+                              values_to = "proportion")
+data_cleveland %>% 
+  select(District, tech_var, proportion)
+```
+
+### Make the graph
+
+We need to use facets to arrange in the order of the highest % of students who cannot connect from home.
+
+```{r}
+data_cleveland %>% 
+  ggplot(aes(x = proportion, 
+             y = fct_reorder(as_factor(District),
+                             proportion), 
+             color = tech_var)) +
+  geom_line(aes(group = District), 
+            color="black") +
+  geom_point() +
+  labs(title = "Schools with the greatest gap between demand\nand supply of Internet access",
+       subtitle="% of students who cannot connect from home\nVS number of hotspots available at school\n\nThe graph shows how some schools do not offer any hotspots despite\na high % of students who cannot connect from home",
+       x = "Percentage", 
+       y = "Districts", 
+       caption = "Data comes from the Illinois State Board of Education") +
+  scale_color_manual(values = c(rgb(43, 89, 195, maxColorValue = 255),
+                                  rgb(244, 91, 105, maxColorValue = 255))) +
+  plot_theme +
+  guides(color=guide_legend("Technology Variables"))
+
+```
+
+>With the help of this graph, we have visualized the Internet accessibility gap present in some schools. The most urgent cases are presented on top - where more than 50% of students cannot connect to Internet from home, yet there is not a single hotspot available at the school.
+
+### №2. Districts facing the most device accessibility issues
+
+In order to define the districts facing the most device accessibility barriers, we need to look at schools that have the lowest proportion of device per student. Automatically these schools are not considered "one-to-one", which is a common concept describing schools that provide each student with an instructional device like a laptop, tablet, and Chromebook.
+
+To demonstrate districts needing most help we will only look at schools that offer less than a device per 2 students (0.5 per student).
+
+
+```{r}
+# create a dataset
+device_data = 
+  tech_data_perc %>% 
+  filter(`one-to-one` == "no", 
+         `# devices per student` < 0.5)
+```
+
+We want to color counties that have schools in this category more than once:
+
+```{r}
+# get names of counties that we see in this dataset the most
+counties_count =
+  device_data %>% 
+  count(`County Name`) %>% 
+  arrange(desc(n)) %>% 
+  filter(n > 1)
+
+as.vector(counties_count[,1])
+```
+
+
+```{r}
+# build a bar chart
+device_data %>% 
+  ggplot() +
+  geom_bar(mapping=aes(x = fct_reorder(as_factor(District),
+                             `# devices per student`,
+                             .desc = TRUE),
+                       y = `# devices per student`,
+           fill=ifelse(`County Name`== "Cook" |
+                                   `County Name`== "Champaign" |
+                                   `County Name`== "Edgar" |
+                                   `County Name`== "Franklin" |
+                                   `County Name`== "Lake",
+                                   `County Name`,
+                                   "Only 1 school")),
+           stat="identity") +
+  labs(title="Schools with the lowest number of devices\navailable per student",
+       subtitle="These districts are the furthest from the 'one-to-one' concept\ndescribing schools providing every student with their own device",
+       x = "District Name",
+       y = "# devices per student", 
+       caption = "Data comes from the Illinois State Board of Education") +
+  scale_fill_manual(values = c("#66c2a5", "#fc8d62", "#a6d854", "#ffd92f", "#8da0cb", "#b3b3b3")) +
+  coord_flip() +
+  plot_theme +
+  guides(fill=guide_legend(title="Counties with more than one\ndictrict in the list:"))
+```
+
+>With the help of this graph, we have visualized the disctricts with most urgent device accessibility issues - there is less that one device per two students available. We can also see that some counties are in the list more often than the others.
+
+### Identifying schools that face both - Internet and device assessibility issues
+
+To find schools that suffer significantly from both - lack of access to Internet and devices - we inner join two data sets to find the districts present in both.
+
+We can see that there is only one district that suffers significantly from both technology-related issues: Midwest Central CUSD 191 Mason. This means that most schools need help in one of the two analyzed areas of technology accessibility - either Internet or device-related. Thus, it is important to be specific with what kind of help each schools receives and optimize funding by only giving what is needed.
+
+```{r}
+internet_data = 
+  tech_data_perc %>% 
+    arrange(`# hotspots per student`, desc(`% can't connect`)) %>%
+    slice(1:20) %>% 
+  select(District,
+         `County Name`,
+         `# devices per student`,
+         `% can't connect`, 
+         `# hotspots per student`)
+
+device_data = 
+  device_data %>% 
+    select(District,
+         `County Name`,
+         `# devices per student`,
+         `% can't connect`, 
+         `# hotspots per student`)
+```
+
+```{r}
+both_data = 
+  internet_data %>% 
+  inner_join(device_data, by = c("District",
+         "County Name",
+         "# devices per student",
+         "% can't connect", 
+         "# hotspots per student"))
+both_data
+```
+
+## Conclusions
+
+### Main points
+- The performed analysis allowed us to identify school districts that need the most help in each of technology accessibility category - Internet or device accessibility.
+- We noted that almost all schools except for one (Midwest Central CUSD) were most significantly lacking in only one of the two categories but not in both at once. This allows to potentially optimize technology-related funding by giving each school exactly what it needs.
+- While this analysis concentrated on identifying school districts that need more funding, as a perspective continuation of the research, it might stand to reason to further explore how these schools correspond with Illinois Counties. It is possible that some counties have more need than the others.
+
+### Limitations to results
+
+- Identified missing values (non-reported data) were found to be from some of the poorest schools in Illinois. This not only means some bias in the final results, but also that we could not represent the schools that are very likely in high need of support as well. Thus, it is our recommendation that data from these schools is collected for more accurate results.
+- Since in cases where values are below 10, instead of specifying exact numbers the input was noted as "<10", this might also have distorted the accuracy of results and added bias. Thus, we recommend to collect more exact numbers where possible.
+
+### Final thoughts
+Ideally this work should help policymakers decide which school districts need the most technology-related funding for the upcoming school years: whether in Internet connectivity or device accessibility. The current correlations allow us to state that addressing the technology accessibility gap will allow to primarily aid the low-income and homeless student population as well as some minority groups (mostly, African American, Native American and Pacific Islander). 
+
+Our goal was to locate districts with the highest demand for technology-related funding. It is our hope that the resources will be directed to where they are most needed and where they can impact most lives.
+
+
+
+
