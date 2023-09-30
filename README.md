@@ -1,5 +1,5 @@
 # Illinois-School-tech-access
-The project uses data from the [Illinois State Board of Education](https://www.isbe.net/Pages/Data-Analysis-Reports.aspx) in an attempt to define which school districts in Illinois experience the most technology accessibility issues and potentially need more funding.
+The project uses data from the [Illinois State Board of Education](https://www.isbe.net/Pages/Data-Analysis-Reports.aspx) in an attempt to define which school districts in Illinois experience the most technology accessibility issues and potentially need more funding. We then attempt to identify the underlying reasons for disproportions using machine learning models.
 
 The "code" R Markdown file outputs an HTML file thoroughly describing the analysis (data wrangling, feature engineering, assessment of NAs, variable distributions, etc.).
 
